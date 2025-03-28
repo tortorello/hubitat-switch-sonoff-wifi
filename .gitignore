@@ -1,0 +1,28 @@
+# Histórico do editor
+.history/
+
+# Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
+
+# Arquivos de log
+*.log
+
+# Configurações locais do editor
+.vscode/
+.idea/
+
+# Arquivos temporários
+*.tmp
+*.swp
+*.bak
+*.old
+
+# Arquivos de compilação ou cache
+*.class
+*.pyc
+*.pyo
+_pycache_/
+
+# Diretórios de dependências (se aplicável)
+node_modules/
