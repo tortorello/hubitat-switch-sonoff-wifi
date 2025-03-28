@@ -60,5 +60,4 @@ Este projeto está licenciado sob a [Apache License 2.0](LICENSE).
 
 ## Contato
 
-- **Autor Original**: Marco Felicio (maffpt@gmail.com)
 - **Atualizações**: Victor Tortorello Neto (vtneto@gmail.com)
