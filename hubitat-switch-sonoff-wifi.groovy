@@ -1,7 +1,7 @@
 /*
     v2025.0 Victor Tortorello Neto (vtneto@gmail.com)
     
-	Based on 2021, version 0.2.0, by Marco Felicio (maffpt@gmail.com).
+	Based on 2021, version 0.2.0 by Marco Felicio (maffpt@gmail.com).
 
     Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
     in compliance with the License. You may obtain a copy of the License at:
@@ -12,6 +12,9 @@
     on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
     for the specific language governing permissions and limitations under the License.
 */
+
+import java.time.Instant
+import java.time.Duration
 
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceEvent
@@ -24,21 +27,21 @@ import java.security.MessageDigest
 import groovy.transform.Field
 import groovy.json.JsonSlurper
 
-@Field static _namespace = "tortorello.sonoff"
+import hubitat.helper.HexUtils
 
-@Field static _driverVersion = "0.2.0"
+@Field static final _namespace = "tortorello.sonoff"
 
-@Field static _httpRequestPort = "8081"
-@Field static _httpRequestTimeout = 5
+@Field static final _driverVersion = "0.2.11"
 
-@Field static _mDNS = null
-@Field static _mDNSServiceType = "_ewelink._tcp.local."
-@Field static _mDNSServiceListener = null
-@Field static _mDNSDiscoveryRunning = false
+@Field static final _httpRequestPort = "8081"
+@Field static final _httpRequestTimeout = 5
+
+@Field static _mDNSSocket = null
+@Field static final _mDNSServiceType = "_ewelink._tcp.local."
 
 metadata 
 {
-    definition (name: "Sonoff Wi-Fi Switch-Man DIY Mode", namespace: _namespace, author: "Victor Tortorello") 
+    definition (name: "Sonoff Wi-Fi Switch-Man DIY Mode", namespace: _namespace, author: "Victor Tortorello", singleThreaded: true) 
     {
         capability "Switch"        
         command "on"
@@ -75,7 +78,7 @@ metadata
                defaultValue: "",
                required: true,
                submitOnChange: true,
-               title: "Sonoff Switch-Man LAN Key")
+               title: "Sonoff Switch-Man Device API Key")
         
         input ("switchOutlet",
                "number",
@@ -90,14 +93,7 @@ metadata
                required: false,
                submitOnChange: true,
                title: "Multicast DNS (mDNS) Discovery")
-        
-        input ("mDNSDiscoveryInterval",
-               "number",
-               defaultValue: 15,
-               required: false,
-               submitOnChange: true,
-               title: "Multicast DNS (mDNS) Discovery Interval in Seconds")
-        
+                
         input ("debugLogging",
                "bool",
                defaultValue: false,
@@ -118,8 +114,46 @@ def getInfo ()
     //sendEvent (name: "deviceInformation", value: deviceData)
     
    // if (getDataValue ("switch") != deviceData?.switch) sendEvent (name: "switch", value: deviceData.switch)
+    
+    // if (_mDNS == null) logDebug "mDNS not initialized"
+    // else logDebug "mDNS initialized: $_mDNS"
+    
+    testSocket(5353)
                    
     logDebug "getInfo: OUT"
+}
+
+void socketStatus(message) {
+	log.warn("socket status is: ${message}")
+}
+
+void parse(message) {
+    final messageObj = new groovy.json.JsonSlurper().parseText(message);
+    
+    if (!messageObj?.fromIp?.equals(switchIpAddress)) return
+    
+    byte[] payload = hubitat.helper.HexUtils.hexStringToByteArray(messageObj.payload) // messageObj.payload.decodeHex()
+    def payloadStr = new String(payload, "UTF-8")
+    
+    def data1StartPos = payloadStr.indexOf("data1=")
+    
+    if (data1StartPos < 0) return
+       
+	def data1EndPos = payloadStr.indexOf("seq=", data1StartPos)
+    def data1 = payloadStr.substring(data1StartPos + 6, data1EndPos).trim()
+    
+    def ivStartPos = payloadStr.indexOf("iv=") 
+    
+    if (ivStartPos < 0) return
+    
+	def ivEndPos = payloadStr.indexOf("encrypt=", ivStartPos)
+    def iv = payloadStr.substring(ivStartPos + 3, ivEndPos).trim()
+    
+    parseDNSDiscovery([
+        "fromIp": messageObj.fromIp,
+        "data1": data1,
+        "iv": iv
+    ])
 }
 
 def initializeDNSDiscovery()
@@ -128,103 +162,74 @@ def initializeDNSDiscovery()
         logDebug "Could not initialize; mDNS discovery disabled"
         return
     }
-        
-    if (_mDNS == null) {
-        _mDNS = JmDNS.create("eWeLink")
-        
-        _mDNSServiceListener = [
-            serviceResolved: {}, // { ServiceEvent event -> parseDNSDiscovery(event) },
-            serviceRemoved: {}, // { ServiceEvent event -> parseDNSDiscovery(event) },
-            serviceAdded: { ServiceEvent event -> parseDNSDiscovery(event) }
-        ] as javax.jmdns.ServiceListener
-               
-        _mDNS.addServiceListener(_mDNSServiceType, _mDNSServiceListener)
-        
-        logDebug "mDNS initialized now " + _mDNS        
+    
+    logDebug "initializing mDNS socket..."
+    
+    if (_mDNSSocket == null) {
+    	_mDNSSocket = interfaces.getMulticastSocket("224.0.0.251", 5353)
     } else {
-    	logDebug "mDNS was already initialized " + _mDNS
+        logDebug "mDNS was already initialized: ${_mDNS.getName()}"
     }
     
-    //if (!_mDNSDiscoveryRunning) {
-    //    schedule("0/${mDNSDiscoveryInterval} 0 0 ? * * *", "runDNSDiscovery")
-    //    _mDNSDiscoveryRunning = true
-    //}
+    if (!_mDNSSocket.connected) _mDNSSocket.connect()
 }
 
 def stopDNSDiscovery() {
     if (mDNSDiscovery) return false
     
-    if (_mDNS != null) {
-        if (_mDNSServiceListener != null) _mDNS.removeServiceListener(_mDNSServiceType, _mDNSServiceListener)
-        
-        _mDNS.close()
-        _mDNS = null
+    if (_mDNSSocket != null) {
+        _mDNSSocket.close()
+        _mDNSSocket = null
     }
-    
-    // _mDNSDiscoveryRunning = false
-    // unschedule("runDNSDiscovery")
     
     return true
 }
-def runDNSDiscovery() {
-    if (stopDNSDiscovery()) {
-        logDebug "Could not run; mDNS discovery disabled"
+
+def parseDNSDiscovery(payload) {
+    logDebug "parsing mDNS discovery"
+    
+    if (!payload?.fromIp?.equals(switchIpAddress)) {
+        logDebug "mDNS on different IP ${payload?.fromIp}; not parsed"
         return
     }
-    
-    logDebug "mDNS discovery started; looping: ${_mDNSDiscoveryRunning}"
-    
-    // pauseExecution(100)
-    
-    // _mDNSDiscoveryRunning = true
-    // runIn(mDNSDiscoveryInterval, "runDNSDiscovery")
-    
-    logDebug "mDNS discovery finished; looping: ${_mDNSDiscoveryRunning}"
-}
+   
+    /*
+	final deviceId = serviceInfo.getPropertyString("id");
 
-def parseDNSDiscovery(event) {
-	def serviceInfo = _mDNS.getServiceInfo(event.getType(), event.getName())
+    if (!deviceId?.isEmpty()) {
+        logDebug "mDNS found device ID ${deviceId}; checking against ${switchDeviceId}"
 
-    if (serviceInfo?.getHostAddress()?.equals(switchIpAddress)) {
-		logDebug "mDNS service event ${event.getName()} of type ${event.getType()} at address ${serviceInfo.getHostAddress()}"
-        
-        final deviceId = serviceInfo.getPropertyString("id");
-        
-        if (!deviceId?.isEmpty()) {
-            logDebug "mDNS found device ID ${deviceId}; checking against ${switchDeviceId}"
-            
-            if (!deviceId.equals(switchDeviceId)) {
-            	logDebug "Setting switch device ID to ${deviceId}"
-            	device.updateSetting("switchDeviceId", [value: switchDeviceId = deviceId, type: "text"]) // sendEvent(name: "switchDeviceId", value: switchDeviceId = deviceId)
-            }
+        if (!deviceId.equals(switchDeviceId)) {
+            logDebug "Setting switch device ID to ${deviceId}"
+            device.updateSetting("switchDeviceId", [value: switchDeviceId = deviceId, type: "text"])
         }
+    }
+    */
+    
+    final data = payload?.data1;
+    final iv = payload?.iv;
 
-        // for (def a in serviceInfo.getPropertyNames()) logDebug "Service resolved propertyName:" + a + " value:" + serviceInfo.getPropertyString(a)
-        
-        final data = serviceInfo.getPropertyString("data1");
-        final iv = serviceInfo.getPropertyString("iv")
-        
-        if (data != null && !data.isEmpty() && iv != null && !iv.isEmpty()) {
-            def key = generateMD5Hash(switchLanKey)
-            def decodedData = data.decodeBase64()
-            def decodedIV = iv.decodeBase64()
+    if (data != null && !data.isEmpty() && iv != null && !iv.isEmpty()) {
+        def key = generateMD5Hash(switchLanKey)
+        def decodedData = data.decodeBase64()
+        def decodedIV = iv.decodeBase64()
 
-            def cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            def secretKeySpec = new SecretKeySpec(key, "AES")
-            def ivParameterSpec = new IvParameterSpec(decodedIV)
-            cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, ivParameterSpec);
+        def cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        def secretKeySpec = new SecretKeySpec(key, "AES")
+        def ivParameterSpec = new IvParameterSpec(decodedIV)
+        cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, ivParameterSpec);
 
-            def decrypted = new String(cipher.doFinal(decodedData))            
-            def decryptedMap = new JsonSlurper().parseText(decrypted)
+        def decrypted = new String(cipher.doFinal(decodedData))            
+        def decryptedMap = new JsonSlurper().parseText(decrypted)
+
+        logDebug "mDNS discovery resolved " + decryptedMap
+
+        if (decryptedMap.switches != null) {
             
-            logDebug "mDNS discovery resolved " + decryptedMap
-            
-            if (decryptedMap.switches != null) {
-                decryptedMap.switches.each { _switch ->
-                    if (_switch.outlet == switchOutlet && _switch.switch != null && !_switch.switch.isEmpty()) {
-                        logDebug "mDNS updating switch status to ${_switch.switch}"
-                        sendEvent(name: "switch", value: _switch.switch)
-                    }
+            decryptedMap.switches.each { _switch ->
+                if (_switch.outlet == switchOutlet && _switch.switch != null && !_switch.switch.isEmpty()) {
+                    logDebug "mDNS updating switch status to ${_switch.switch}"
+                    sendEvent(name: "switch", value: _switch.switch)
                 }
             }
         }
@@ -260,7 +265,6 @@ def refresh ()
     logDebug "refresh: IN"
     
     initializeDNSDiscovery()
-    getInfo()
     
     logDebug "refresh: OUT"
 }
@@ -272,8 +276,6 @@ def uninstalled ()
 {
     logDebug "uninstalled: IN"
     
-	unschedule("runDNSDiscovery")
-
     logInfo "Sonoff switch DIY mode '${device.label}' successfully uninstalled"
        
     logDebug "uninstalled: OUT"
