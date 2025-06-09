@@ -168,7 +168,7 @@ def initializeDNSDiscovery()
     if (_mDNSSocket == null) {
     	_mDNSSocket = interfaces.getMulticastSocket("224.0.0.251", 5353)
     } else {
-        logDebug "mDNS was already initialized: ${_mDNS.getName()}"
+        logDebug "mDNS socket was already initialized"
     }
     
     if (!_mDNSSocket.connected) _mDNSSocket.connect()
