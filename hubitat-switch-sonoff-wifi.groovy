@@ -166,7 +166,8 @@ def initializeDNSDiscovery(forceStop = false)
         logDebug "Could not initialize; mDNS discovery disabled $_mDNSSocket"
         return
     }
-    
+
+    /*
     if (_mDNSSocket == null) {
     	_mDNSSocket = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
     } else {
@@ -179,18 +180,25 @@ def initializeDNSDiscovery(forceStop = false)
     } else {
         logDebug "mDNS socket was already connected"
     }
+	*/
+    logDebug "Connecting mDNS TEST socket..."
+    def test = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
+    if (!test.connected) test.connect()
 }
 
 def stopDNSDiscovery(forceStop = false) {
 	logDebug "Stopping mDNS socket... $_mDNSSocket (forcing: $forceStop)"
     
     if (mDNSDiscovery && !forceStop) return false
-    
+
+    /*
     if (_mDNSSocket != null) {
         _mDNSSocket.disconnect()
         _mDNSSocket = null
     }
-    
+	*/
+    def test = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
+    if (test.connected) test.disconnect()
     return true
 }
 
