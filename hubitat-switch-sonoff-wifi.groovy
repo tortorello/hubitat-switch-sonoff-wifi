@@ -31,12 +31,14 @@ import hubitat.helper.HexUtils
 
 @Field static final _namespace = "tortorello.sonoff"
 
-@Field static final _driverVersion = "0.2.11"
+@Field static final _driverVersion = "0.2.18"
 
 @Field static final _httpRequestPort = "8081"
 @Field static final _httpRequestTimeout = 5
 
 @Field static _mDNSSocket = null
+@Field static final _mDNSHost = "224.0.0.251"
+@Field static final _mDNSPort = 5353
 @Field static final _mDNSServiceType = "_ewelink._tcp.local."
 
 metadata 
@@ -114,12 +116,7 @@ def getInfo ()
     //sendEvent (name: "deviceInformation", value: deviceData)
     
    // if (getDataValue ("switch") != deviceData?.switch) sendEvent (name: "switch", value: deviceData.switch)
-    
-    // if (_mDNS == null) logDebug "mDNS not initialized"
-    // else logDebug "mDNS initialized: $_mDNS"
-    
-    testSocket(5353)
-                   
+                       
     logDebug "getInfo: OUT"
 }
 
@@ -130,10 +127,15 @@ void socketStatus(message) {
 void parse(message) {
     final messageObj = new groovy.json.JsonSlurper().parseText(message);
     
-    if (!messageObj?.fromIp?.equals(switchIpAddress)) return
+    if (!messageObj?.fromIp?.equals(switchIpAddress)) {
+        logDebug "mDNS message from IP ${messageObj?.fromIp} dropped; expected ${switchIpAddress}"
+        return
+    }
     
     byte[] payload = hubitat.helper.HexUtils.hexStringToByteArray(messageObj.payload) // messageObj.payload.decodeHex()
     def payloadStr = new String(payload, "UTF-8")
+    
+    logDebug "Parsing mDNS message: $payloadStr"
     
     def data1StartPos = payloadStr.indexOf("data1=")
     
@@ -156,29 +158,36 @@ void parse(message) {
     ])
 }
 
-def initializeDNSDiscovery()
+def initializeDNSDiscovery(forceStop = false)
 {
-    if (stopDNSDiscovery()) {
-        logDebug "Could not initialize; mDNS discovery disabled"
+    logDebug "Initializing mDNS socket..."
+    
+    if (stopDNSDiscovery(forceStop) && !mDNSDiscovery) {
+        logDebug "Could not initialize; mDNS discovery disabled $_mDNSSocket"
         return
     }
     
-    logDebug "initializing mDNS socket..."
-    
     if (_mDNSSocket == null) {
-    	_mDNSSocket = interfaces.getMulticastSocket("224.0.0.251", 5353)
+    	_mDNSSocket = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
     } else {
-        logDebug "mDNS socket was already initialized"
+        logDebug "mDNS socket was already initialized: $_mDNSSocket"
     }
     
-    if (!_mDNSSocket.connected) _mDNSSocket.connect()
+    if (!_mDNSSocket.connected) {
+        logDebug "Connecting mDNS socket..."
+        _mDNSSocket.connect()
+    } else {
+        logDebug "mDNS socket was already connected"
+    }
 }
 
-def stopDNSDiscovery() {
-    if (mDNSDiscovery) return false
+def stopDNSDiscovery(forceStop = false) {
+	logDebug "Stopping mDNS socket... $_mDNSSocket (forcing: $forceStop)"
+    
+    if (mDNSDiscovery && !forceStop) return false
     
     if (_mDNSSocket != null) {
-        _mDNSSocket.close()
+        _mDNSSocket.disconnect()
         _mDNSSocket = null
     }
     
@@ -186,7 +195,7 @@ def stopDNSDiscovery() {
 }
 
 def parseDNSDiscovery(payload) {
-    logDebug "parsing mDNS discovery"
+    logDebug "Parsing mDNS discovery"
     
     if (!payload?.fromIp?.equals(switchIpAddress)) {
         logDebug "mDNS on different IP ${payload?.fromIp}; not parsed"
@@ -252,7 +261,8 @@ def initialize ()
     logDebug "initialize: IN"
     logDebug "initialize: device.capabilities = ${device.capabilities}"
     
-	initializeDNSDiscovery()
+    logDebug("Waiting 10 seconds to initialize mDNS...")
+    runIn(10, "initializeDNSDiscovery", [data: true])
     
     logDebug "initialize: OUT"
 }
@@ -264,7 +274,7 @@ def refresh ()
 {
     logDebug "refresh: IN"
     
-    initializeDNSDiscovery()
+    initializeDNSDiscovery(true)
     
     logDebug "refresh: OUT"
 }
@@ -302,7 +312,7 @@ def updated ()
         logInfo "Device's IP address is invalid (${switchIpAddress})"
     }
 
-    initializeDNSDiscovery()
+    initializeDNSDiscovery(true)
     logDebug "updated: OUT"
 }
 
