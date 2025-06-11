@@ -1,5 +1,5 @@
 /*
-    v2025.0 Victor Tortorello Neto (vtneto@gmail.com)
+    v0.2.2 Victor Tortorello Neto (vtneto@gmail.com)
     
 	Based on 2021, version 0.2.0 by Marco Felicio (maffpt@gmail.com).
 
@@ -16,9 +16,6 @@
 import java.time.Instant
 import java.time.Duration
 
-import javax.jmdns.JmDNS
-import javax.jmdns.ServiceEvent
-
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -27,28 +24,22 @@ import java.security.MessageDigest
 import groovy.transform.Field
 import groovy.json.JsonSlurper
 
-import hubitat.helper.HexUtils
-
 @Field static final _namespace = "tortorello.sonoff"
 
-@Field static final _driverVersion = "0.2.18"
+@Field static final _driverVersion = "0.2.2"
 
 @Field static final _httpRequestPort = "8081"
 @Field static final _httpRequestTimeout = 5
 
-@Field static _mDNSSocket = null
 @Field static final _mDNSHost = "224.0.0.251"
 @Field static final _mDNSPort = 5353
 @Field static final _mDNSServiceType = "_ewelink._tcp.local."
 
-metadata 
-{
-    definition (name: "Sonoff Wi-Fi Switch-Man DIY Mode", namespace: _namespace, author: "Victor Tortorello", singleThreaded: true) 
-    {
+metadata {
+    definition(name: "Sonoff Wi-Fi Switch DIY", namespace: _namespace, author: "Victor Tortorello", singleThreaded: true) {
         capability "Switch"        
         command "on"
         command "off"
-        command "getInfo"
               
         capability "Initialize"
         command "initialize"
@@ -59,103 +50,125 @@ metadata
         attribute "preferencesValidation", "string"
     }
 
-    preferences 
-    {
-        input ("switchIpAddress",
-               "text",
-               defaultValue: "",
-               required: true,
-               submitOnChange: true,
-               title: "Sonoff Switch-Man IP Address")
+    preferences {
+        input("switchIpAddress",
+              "text",
+              defaultValue: "",
+              required: true,
+              submitOnChange: true,
+              title: "Sonoff Switch IP Address")
         
-        input ("switchDeviceId",
-               "text",
-               defaultValue: "",
-               required: true,
-               submitOnChange: true,
-               title: "Sonoff Switch-Man Device ID")
+        input("switchDeviceId",
+              "text",
+              defaultValue: "",
+              required: true,
+              submitOnChange: true,
+              title: "Sonoff Switch Device ID")
         
-        input ("switchLanKey",
-               "text",
-               defaultValue: "",
-               required: true,
-               submitOnChange: true,
-               title: "Sonoff Switch-Man Device API Key")
+        input("switchLanKey",
+              "text",
+              defaultValue: "",
+              required: true,
+              submitOnChange: true,
+              title: "Sonoff Switch Device API Key")
         
-        input ("switchOutlet",
-               "number",
-               defaultValue: 0,
-               required: false,
-               submitOnChange: true,
-               title: "Sonoff Switch-Man Outlet")
+        input("switchOutlet",
+              "number",
+              defaultValue: 0,
+              required: false,
+              submitOnChange: true,
+              title: "Sonoff Switch Outlet")
         
-        input ("mDNSDiscovery",
-               "bool",
-               defaultValue: false,
-               required: false,
-               submitOnChange: true,
-               title: "Multicast DNS (mDNS) Discovery")
+        input("mDNSDiscovery",
+              "bool",
+              defaultValue: false,
+              required: false,
+              submitOnChange: true,
+              title: "Multicast DNS (mDNS) Discovery")
                 
-        input ("debugLogging",
-               "bool",
-               defaultValue: false,
-               required: false,
-               submitOnChange: true,
-               title: "Enable Debug Logging")
+        input("debugLogging",
+              "bool",
+              defaultValue: false,
+              required: false,
+              submitOnChange: true,
+              title: "Enable Debug Logging")
     }
 }
+                                     
+def installed () {
+    logDebug "Installing device..."
 
-def getInfo ()
-{
-    logDebug "getInfo: IN"
-    
-    // def deviceData = getDeviceData ()
-    
-    // initializeDNSDiscovery()
-    
-    //sendEvent (name: "deviceInformation", value: deviceData)
-    
-   // if (getDataValue ("switch") != deviceData?.switch) sendEvent (name: "switch", value: deviceData.switch)
-                       
-    logDebug "getInfo: OUT"
+    initialize()
+
+    logInfo "Sonoff Wi-Fi Switch DIY '${device.label}' installed. Don't forget that the device's IP address, ID, LAN key and outlet must be set."
 }
 
-void socketStatus(message) {
-	log.warn("socket status is: ${message}")
+def initialize() {
+    logDebug "Initializing device..."
+    logDebug "Device capabilities: ${device.capabilities}"
+    
+    initializeDNSDiscovery(true)
 }
+
+def refresh() {
+    logDebug "Refreshing device..."
+    
+    initializeDNSDiscovery(true)
+}
+
+def uninstalled() {
+    logDebug "Uninstalling device..."
+    
+    stopDNSDiscovery(true)
+    
+    logInfo "Device '${device.label}' successfully uninstalled."
+}
+
+def updated() {
+    logDebug "Updating device..."
+    
+    def ipAddressRegex = ~/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/
+    def ipAddressOk = ipAddressRegex.matcher(switchIpAddress).matches()
+    
+    if (ipAddressOk) {
+        sendEvent (name: "preferencesValidation", value: "<br />IP address (${switchIpAddress}) is valid")
+        logInfo "Device's IP address is valid (${switchIpAddress})"
+    } else {
+        sendEvent (name: "preferencesValidation", value: "<br />IP address '${switchIpAddress}' is not valid")
+        logInfo "Device's IP address is invalid (${switchIpAddress})"
+    }
+
+    initializeDNSDiscovery(true)
+}
+
+def off() {
+    executeAction("off")
+}
+
+def on() {
+    executeAction("on")
+}
+
+//
+// Inner methods
+//
 
 void parse(message) {
-    final messageObj = new groovy.json.JsonSlurper().parseText(message);
-    
+    final messageObj = new JsonSlurper().parseText(message);
+       
     if (!messageObj?.fromIp?.equals(switchIpAddress)) {
         logDebug "mDNS message from IP ${messageObj?.fromIp} dropped; expected ${switchIpAddress}"
         return
     }
     
-    byte[] payload = hubitat.helper.HexUtils.hexStringToByteArray(messageObj.payload) // messageObj.payload.decodeHex()
-    def payloadStr = new String(payload, "UTF-8")
+    byte[] payload = hubitat.helper.HexUtils.hexStringToByteArray(messageObj.payload) 
+    def payloadStr = new String(payload, "ISO-8859-1")
     
-    logDebug "Parsing mDNS message: $payloadStr"
+    def payloadKeyVal = extractKeyValuePairs(payloadStr)
     
-    def data1StartPos = payloadStr.indexOf("data1=")
+    logDebug "Decoded mDNS message: $payloadKeyVal"
     
-    if (data1StartPos < 0) return
-       
-	def data1EndPos = payloadStr.indexOf("seq=", data1StartPos)
-    def data1 = payloadStr.substring(data1StartPos + 6, data1EndPos).trim()
-    
-    def ivStartPos = payloadStr.indexOf("iv=") 
-    
-    if (ivStartPos < 0) return
-    
-	def ivEndPos = payloadStr.indexOf("encrypt=", ivStartPos)
-    def iv = payloadStr.substring(ivStartPos + 3, ivEndPos).trim()
-    
-    parseDNSDiscovery([
-        "fromIp": messageObj.fromIp,
-        "data1": data1,
-        "iv": iv
-    ])
+    parseDNSDiscovery(["fromIp": messageObj.fromIp] + payloadKeyVal)
 }
 
 def initializeDNSDiscovery(forceStop = false)
@@ -163,47 +176,35 @@ def initializeDNSDiscovery(forceStop = false)
     logDebug "Initializing mDNS socket..."
     
     if (stopDNSDiscovery(forceStop) && !mDNSDiscovery) {
-        logDebug "Could not initialize; mDNS discovery disabled $_mDNSSocket"
+        logDebug "Could not initialize; mDNS discovery disabled"
         return
     }
 
-    /*
-    if (_mDNSSocket == null) {
-    	_mDNSSocket = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
-    } else {
-        logDebug "mDNS socket was already initialized: $_mDNSSocket"
-    }
+    def socket = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
     
-    if (!_mDNSSocket.connected) {
-        logDebug "Connecting mDNS socket..."
-        _mDNSSocket.connect()
-    } else {
-        logDebug "mDNS socket was already connected"
-    }
-	*/
-    logDebug "Connecting mDNS TEST socket..."
-    def test = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
-    if (!test.connected) test.connect()
+    logDebug "Connecting mDNS socket..."
+    
+    if (!socket.connected) socket.connect()
 }
 
 def stopDNSDiscovery(forceStop = false) {
-	logDebug "Stopping mDNS socket... $_mDNSSocket (forcing: $forceStop)"
+    logDebug "Stopping mDNS socket" + (forceStop ? " FORCED" : "") + "..."
     
     if (mDNSDiscovery && !forceStop) return false
 
-    /*
-    if (_mDNSSocket != null) {
-        _mDNSSocket.disconnect()
-        _mDNSSocket = null
-    }
-	*/
-    def test = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
-    if (test.connected) test.disconnect()
+    def socket = interfaces.getMulticastSocket(_mDNSHost, _mDNSPort)
+    if (socket.connected) socket.disconnect()
+    
     return true
 }
 
 def parseDNSDiscovery(payload) {
-    logDebug "Parsing mDNS discovery"
+    logDebug "Parsing mDNS discovery..."
+    
+    if (!payload?.data1 || !payload?.iv) {
+        logDebug "Lack of data and IV fields in the mDNS message; not parsed"
+        return
+    }
     
     if (!payload?.fromIp?.equals(switchIpAddress)) {
         logDebug "mDNS on different IP ${payload?.fromIp}; not parsed"
@@ -222,174 +223,45 @@ def parseDNSDiscovery(payload) {
         }
     }
     */
+        
+    final decrypted = decryptData(payload.data1, payload.iv); 
+
+    logDebug "mDNS discovery resolved " + decrypted
     
-    final data = payload?.data1;
-    final iv = payload?.iv;
+    def newSwitchVal = null
 
-    if (data != null && !data.isEmpty() && iv != null && !iv.isEmpty()) {
-        def key = generateMD5Hash(switchLanKey)
-        def decodedData = data.decodeBase64()
-        def decodedIV = iv.decodeBase64()
-
-        def cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        def secretKeySpec = new SecretKeySpec(key, "AES")
-        def ivParameterSpec = new IvParameterSpec(decodedIV)
-        cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, ivParameterSpec);
-
-        def decrypted = new String(cipher.doFinal(decodedData))            
-        def decryptedMap = new JsonSlurper().parseText(decrypted)
-
-        logDebug "mDNS discovery resolved " + decryptedMap
-
-        if (decryptedMap.switches != null) {
-            
-            decryptedMap.switches.each { _switch ->
-                if (_switch.outlet == switchOutlet && _switch.switch != null && !_switch.switch.isEmpty()) {
-                    logDebug "mDNS updating switch status to ${_switch.switch}"
-                    sendEvent(name: "switch", value: _switch.switch)
-                }
-            }
+    if (decrypted.switches != null) { // Switch-Man
+        decrypted.switches.each { _switch ->
+            if (_switch.outlet == switchOutlet && !!_switch.switch) newSwitchVal = _switch.switch
         }
+    } else if (!!decrypted.switch) { // Basic
+        newSwitchVal = decrypted.switch
+    }
+    
+    if (newSwitchVal) {
+        logDebug "mDNS updating switch status to ${newSwitchVal}"
+        sendEvent(name: "switch", value: newSwitchVal)
     }
 }
 
-def installed ()
-{
-    logDebug "installed: IN"
-
-    initialize()
-
-    logInfo "Sonoff switch DIY mode '${device.label}' installed - don't forget that the device's IP address must be set!"
-
-    logDebug "installed: OUT"
-}
-
-def initialize () 
-{
-    logDebug "initialize: IN"
-    logDebug "initialize: device.capabilities = ${device.capabilities}"
-    
-    logDebug("Waiting 10 seconds to initialize mDNS...")
-    runIn(10, "initializeDNSDiscovery", [data: true])
-    
-    logDebug "initialize: OUT"
-}
-
-//
-//
-//
-def refresh ()
-{
-    logDebug "refresh: IN"
-    
-    initializeDNSDiscovery(true)
-    
-    logDebug "refresh: OUT"
-}
-
-//
-//
-//
-def uninstalled ()
-{
-    logDebug "uninstalled: IN"
-    
-    logInfo "Sonoff switch DIY mode '${device.label}' successfully uninstalled"
-       
-    logDebug "uninstalled: OUT"
-}
-
-
-//
-//
-//
-def updated () 
-{
-    logDebug "updated: IN"
-    
-    def ipAddressRegex = ~/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/
-    def ipAddressOk = ipAddressRegex.matcher(switchIpAddress).matches()
-    if (ipAddressOk)
-    {
-        sendEvent (name: "preferencesValidation", value: "<br />IP address (${switchIpAddress}) is valid")
-        logInfo "Device's IP address is valid (${switchIpAddress})"
-    }
-    else
-    {
-        sendEvent (name: "preferencesValidation", value: "<br />IP address '${switchIpAddress}' is not valid")
-        logInfo "Device's IP address is invalid (${switchIpAddress})"
-    }
-
-    initializeDNSDiscovery(true)
-    logDebug "updated: OUT"
-}
-
-
-//
-// 
-//
-def off ()
-{
-    logDebug "off: IN"
-
-    executeAction ("off")
-    
-    logDebug "off: OUT"
-}
-
-
-//
-// 
-//
-def on ()
-{
-    logDebug "on: IN"
-
-    executeAction ("on")
-
-    logDebug "on: OUT"
-}
-
-//
-// Inner methods
-//
-
-//
-// Send an action command to the device
-//
-def executeAction (actionToExecute)
-{
+def executeAction(actionToExecute) {
     def retrySendingCommand = true
     def retryCount = 0
     def retryLimit = 3
     
-    def returnData = [switch: "off"] // "unrecoverable"]
+    def returnData = [switch: "off"]
     
-    while (retrySendingCommand)
-    {
-		// --- INÍCIO NETO ---
-    
-        // Configuração das chaves e IV
-        def key = generateMD5Hash(switchLanKey)
-        logDebug "executeAction: switchLanKey = ${switchLanKey} generateMD5Hash = ${key}"
+    while (retrySendingCommand) {
+        def data = null
+        
+        if (switchOutlet < 0) data = /{"switch":"${actionToExecute}"}/
+        else data = /{"switches":[{"switch":"${actionToExecute}","outlet":${switchOutlet}}]}/
+
         def iv = generateRandomIV(16)
+        def encrypted = encryptData(data, iv)
 
-        // def params = ["example": "data"] as Map
-        // def params = /{"switches": [{"switch": "off", "outlet": 0}, {"switch": "${actionToExecute}", "outlet": 1}, {"switch": "off", "outlet": 2}, {"switch": "off", "outlet": 3}]}/
-        def params = /{"switches":[{"switch":"${actionToExecute}","outlet":${switchOutlet}}]}/
-
-        logDebug "executeAction: params ${params instanceof Map} = ${params}"
-
-        def cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        def secretKeySpec = new SecretKeySpec(key, "AES")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec, new IvParameterSpec(iv))
-
-        def encryptedData = cipher.doFinal(params.getBytes("UTF-8"))
-
-        logDebug "executeAction: iv = ${iv} encryptedData = ${encryptedData}"
-
-        def data = [
-            data: encryptedData.encodeBase64().toString(),
+        def body = [
+            data: encrypted.encodeBase64().toString(),
             deviceid: switchDeviceId,
             encrypt: true,
             iv: iv.encodeBase64().toString(),
@@ -397,158 +269,85 @@ def executeAction (actionToExecute)
             sequence: new Date().getTime().toString()
         ]
 
-        logDebug "executeAction: data = ${data}"
+        logDebug "Executing action... $body"
 
+        def uriString = "http://${switchIpAddress}:${_httpRequestPort}/zeroconf"
+        
+        if (switchOutlet < 0) uriString += "/switch"
+        else uriString += "/switches"
+        
+        Map httpRequest = [
+            uri: uriString,
+            body: /{"data": "${body.data}", "deviceid": "${body.deviceid}", "encrypt": true, "iv": "${body.iv}", "selfApikey": "123", "sequence": "${body.sequence}"}/,
+            contentType: "application/json",
+            requestContentType: "application/json",
+            timeout: _httpRequestTimeout]
 
-        // --- FIM NETO ---
+        logDebug "Sending HTTP request..."
 
-        def uriString = "http://${switchIpAddress}:${_httpRequestPort}/zeroconf/switches"
-        Map httpRequest = [uri: uriString, body: /{"data": "${data.data}", "deviceid": "${data.deviceid}", "encrypt": true, "iv": "${data.iv}", "selfApikey": "123", "sequence": "${data.sequence}"}/, contentType: "application/json", requestContentType: "application/json", timeout: _httpRequestTimeout]
-
-        logDebug "executeAction: httpRequest = ${httpRequest}"
-
-        try
-        {
-            httpPost (httpRequest)
-            {
-                resp -> 
-                    returnData = resp?.data
+        try {
+            httpPost(httpRequest) {
+                resp -> returnData = resp?.data
                 
-                logDebug "executeAction: returnData = ${returnData}"
+                logDebug "HTTP response: ${returnData}"
 
                 // If we get here, it means that the request went through fine
                 // Now let's check if the returned data from the device shows that the command was executed without error
-                if (returnData.error != 0)
-                {
+                if (returnData.error != 0) {
                     // Nope ... something went wrong
                     // Let's finish here, ok?
                     returnData = [switch: "unknown error (${returnData.error})"]    
-                }
-                else
-                {
+                } else {
                     // Now let's reflect the switch status obtained from the device itself just to be sure and do not reflect a wrong switch event value
-                    // NETO returnData = getDeviceData ()
                     returnData = [switch: actionToExecute]
+                    sendEvent(name: "switch", value: actionToExecute)
                 }
-                retrySendingCommand = false
-            }
-        }
-        catch (err)
-        {
-            logWarn ("executeAction: Error on httpPost = ${err}")
-            if (++retryCount >= retryLimit)
-            {
-                retrySendingCommand = false
-                logWarn ("executeAction: Exceeded the maximum number of command sending retries (${retryLimit})")
-            }
-            else
-            {
-                // Let's not overhelm the device with requests
-                logDebug "executeAction: Pausing for 300 miliseconds ..."
-                pauseExecution (300)
-            }
-        }
-        sendEvent (name: "switch", value: returnData.switch)
-    }
-    
-    //if (retryCount < retryLimit)
-    //{
-    //    getInfo ()
-    //}
-    
-    logDebug "executeAction: OUT"
-}
-
-               
-//
-// Ask the device its data
-//
-def getDeviceData ()
-{
-    def retrySendingCommand = true
-    def retryCount = 0
-    def retryLimit = 3
-
-    //def uriString = "http://${switchIpAddress}:${_httpRequestPort}/zeroconf/info"
-    //Map httpRequest = [uri: uriString, body: /{ "data": {}}/, contentType: "application/json", requestContentType: "application/json", timeout: _httpRequestTimeout]
-    def returnData = [switch: "off"] //"unrecoverable"]    
-    
-    //logDebug "executeAction: httpRequest = ${httpRequest}"
-    
-    while (retrySendingCommand)
-    {
-        // --- INÍCIO NETO ---
-    
-        // Configuração das chaves e IV
-        def key = generateMD5Hash(switchLanKey)
-        logDebug "getDeviceData executeAction: switchLanKey = ${switchLanKey} generateMD5Hash = ${key}"
-        def iv = generateRandomIV(16)
-
-        def params = /{}/
-
-        def cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        def secretKeySpec = new SecretKeySpec(key, "AES")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec, new IvParameterSpec(iv))
-
-        def json = [deviceid: "1001ec1db5"]
-        def encryptedData = cipher.doFinal(params.getBytes("UTF-8"))
-
-        logDebug "getDeviceData executeAction: iv = ${iv} encryptedData = ${encryptedData}"
-
-        def data = [
-            data: encryptedData.encodeBase64().toString(),
-            deviceid: json.deviceid,
-            encrypt: true,
-            iv: iv.encodeBase64().toString(),
-            selfApikey: "123",
-            sequence: new Date().getTime().toString()
-        ]
-
-        logDebug "getDeviceData executeAction: data = ${data}"
-
-
-        // --- FIM NETO ---
-
-        def uriString = "http://${switchIpAddress}:${_httpRequestPort}/zeroconf/info"
-        Map httpRequest = [uri: uriString, body: /{"data": "${data.data}", "deviceid": "${data.deviceid}", "encrypt": true, "iv": "${data.iv}", "selfApikey": "123", "sequence": "${data.sequence}"}/, contentType: "application/json", requestContentType: "application/json", timeout: _httpRequestTimeout]
-    	//Map httpRequest = [uri: uriString, body: /{ "data": {}}/, contentType: "application/json", requestContentType: "application/json", timeout: _httpRequestTimeout]
-
-        try
-        {
-            logDebug "getDeviceData executeAction: httpRequest = ${httpRequest}"
-            httpPost (httpRequest)
-            {
-                resp -> 
-                    returnData = resp?.data?.data
-                
-                logDebug "getDeviceData executeAction: returnData = ${returnData}"
                 
                 retrySendingCommand = false
             }
-        }
-        catch (err)
-        {
-            logWarn ("executeAction: Error on httpPost = ${err}")
-            if (++retryCount >= retryLimit)
-            {
+        } catch (err) {
+            logWarn "Error on HTTP request: $err"
+            
+            if (++retryCount >= retryLimit) {
                 retrySendingCommand = false
-                logWarn ("executeAction: Exceeded the maximum number of command sending retries (${retryLimit})")
-            }
-            else
-            {
+                logWarn "Exceeded the maximum number of command sending HTTP request retries ($retryLimit)"
+            } else {
                 // Let's not overhelm the device with requests
-                logDebug "executeAction: Pausing for 500 miliseconds ..."
-                pauseExecution (500)
+                logDebug "Pausing for 300 ms..."
+                pauseExecution(300)
             }
         }
     }
-    
-    return returnData
 }
 
-def logDebug (message) { if (debugLogging) log.debug (message) }
-def logInfo  (message) { log.info (message) }
-def logWarn  (message) { log.warn (message) }
+def encryptData(String data, byte[] iv) {
+	def key = generateMD5Hash(switchLanKey)
+    
+    final cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+    final keySpec = new SecretKeySpec(key, "AES")
+    final ivSpec = new IvParameterSpec(iv)
+    
+    cipher.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec)
+
+    return cipher.doFinal(data.getBytes("UTF-8"))
+}
+
+def decryptData(String encodedData, String encodedIV) {
+	def key = generateMD5Hash(switchLanKey)
+    
+    def data = encodedData.decodeBase64()
+    def iv = encodedIV.decodeBase64()    
+    
+    final cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+    final keySpec = new SecretKeySpec(key, "AES")
+    final ivSpec = new IvParameterSpec(iv)
+    
+    cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
+    
+    def decryptedData = new String(cipher.doFinal(data), "UTF-8")
+    
+    return new JsonSlurper().parseText(decryptedData)
+}
 
 def generateMD5Hash(String input) {
     MessageDigest md = MessageDigest.getInstance("MD5")
@@ -560,3 +359,21 @@ def generateRandomIV(int length) {
     new Random().nextBytes(iv)
     return iv
 }
+
+Map<String, String> extractKeyValuePairs(String message, CharSequence splitBy = '[\\x00\\s\\p{Cntrl}\\u0080-\\uFFFF]+') {
+    def result = [:]
+    def parts = message.split(splitBy)
+
+    parts.each { part ->
+        if (part.contains("=")) {
+            def (k, v) = part.split("=", 2)
+            result[k.trim()] = v.trim()
+        }
+    }
+
+    return result
+}
+
+def logDebug (message) { if (debugLogging) log.debug (message) }
+def logInfo  (message) { log.info (message) }
+def logWarn  (message) { log.warn (message) }
